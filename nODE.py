@@ -211,6 +211,7 @@ class NeuralODEModel:
             pred_traj = odeint(self.ode_func, y0, t_tensor)
         return pred_traj.cpu().numpy()  # Move predictions back to CPU for further processing
 
+
 class VisualizerWithSaving(Visualizer):
     def __init__(self, results_dir=RESULTS_DIR):
         """
@@ -255,26 +256,18 @@ class VisualizerWithSaving(Visualizer):
         plt.figure(figsize=(12, 6))
         
         # Plot high-res solution as a continuous line
-        plt.plot(t_high, theta_high, color=self.cb_palette['high_res_solution'], label='High-Res Solution', linewidth=2)
-        
-        # Scatter plot for training data
-        plt.scatter(t_train, theta_train, color=self.cb_palette['training_data'], label='Training Data', s=45, alpha=0.8, edgecolors='w')
-        
-        # Removed test scatter plot as per instruction
-        # plt.scatter(t_test, theta_test, color=self.cb_palette['test_data'], label='Test Data', s=30, alpha=0.7, edgecolors='w')
-        
-        # Vertical line to indicate the train/test split
-        #split_time = t_train[-1]
-        #plt.axvline(x=split_time, color=self.cb_palette['train_test_split'], linestyle='--', label='Train/Test Split', linewidth=1.5)
+        plt.plot(t_high, theta_high, color=self.cb_palette['high_res_solution'], label='High-Res Solution', linewidth=1, zorder=2)
         
         # Title and labels
         plt.title(f'Damped Pendulum: High-Res Solution with Training Data (Frequency = {freq:.2f} Hz)', fontsize=14)
         plt.xlabel('Time (s)', fontsize=12)
         plt.ylabel('Angular Displacement (θ)', fontsize=12)
         
+        # Plot training data scatter on top with alpha=1.0
+        plt.scatter(t_train, theta_train, color=self.cb_palette['training_data'], label='Training Data', s=45, alpha=1.0, edgecolors='w', zorder=3)
+        
         # Legend and grid
         plt.legend(fontsize=10)
-        plt.grid(True, which='both', linestyle='--', linewidth=0.5, color=self.cb_palette['grid_color'], alpha=0.7)
         plt.tight_layout()
         
         # Save the plot
@@ -303,16 +296,9 @@ class VisualizerWithSaving(Visualizer):
         plt.figure(figsize=(12, 6))
         
         # Plot high-res solution as a continuous line
-        plt.plot(t_high, theta_high, color=self.cb_palette['high_res_solution'], label='High-Res Solution', linewidth=2)
-        
-        # Plot true training data as scatter points
-        plt.scatter(t_train, theta_train, color=self.cb_palette['training_data'], label='Training Data', s=45, alpha=0.8, edgecolors='w')
-        
-        # Removed test scatter plot as per instruction
-        # plt.scatter(t_test, theta_test, color=self.cb_palette['test_data'], label='Test Data', s=30, alpha=0.7, edgecolors='w')
+        plt.plot(t_high, theta_high, color=self.cb_palette['high_res_solution'], label='High-Res Solution', linewidth=1, zorder=2)
         
         # Define colors for checkpoints
-        # Cycle through prediction colors if there are more checkpoints than colors
         prediction_colors = [
             self.cb_palette['prediction_1'],
             self.cb_palette['prediction_2'],
@@ -332,20 +318,18 @@ class VisualizerWithSaving(Visualizer):
                 pred_high = predictions_high[idx]
             
             # Plot predicted high-res data
-            plt.plot(t_high, pred_high, color=color, linestyle='--', label=f'Prediction Epoch {epoch}', linewidth=2)
-        
-        # Vertical line to indicate the train/test split
-        split_time = t_train[-1]
-        plt.axvline(x=split_time, color=self.cb_palette['train_test_split'], linestyle='--', label='Train/Test Split', linewidth=1.5)
+            plt.plot(t_high, pred_high, color=color, linestyle='--', label=f'Prediction Epoch {epoch}', linewidth=1, zorder=2)
         
         # Title and labels
         plt.title('Damped Pendulum: True vs Predicted High-Res Trajectories at Checkpoints', fontsize=14)
         plt.xlabel('Time (s)', fontsize=12)
         plt.ylabel('Angular Displacement (θ)', fontsize=12)
         
+        # Plot training data scatter on top with alpha=1.0
+        plt.scatter(t_train, theta_train, color=self.cb_palette['training_data'], label='Training Data', s=45, alpha=1.0, edgecolors='w', zorder=3)
+        
         # Legend and grid
         plt.legend(fontsize=10)
-        plt.grid(True, which='both', linestyle='--', linewidth=0.5, color=self.cb_palette['grid_color'], alpha=0.7)
         plt.tight_layout()
         
         # Save the plot
@@ -365,8 +349,8 @@ class VisualizerWithSaving(Visualizer):
         plt.figure(figsize=(10, 5))
         
         # Plot training and test losses
-        plt.plot(train_losses, label='Training MSE Loss', color=self.cb_palette['training_loss'], linewidth=2)
-        plt.plot(test_losses, label='Test MSE Loss', color=self.cb_palette['test_loss'], linewidth=2)
+        plt.plot(train_losses, label='Training MSE Loss', color=self.cb_palette['training_loss'], linewidth=1, zorder=2)
+        plt.plot(test_losses, label='Test MSE Loss', color=self.cb_palette['test_loss'], linewidth=1, zorder=2)
         
         # Title and labels
         plt.title('Training and Test MSE Loss over Epochs', fontsize=14)
@@ -375,7 +359,6 @@ class VisualizerWithSaving(Visualizer):
         
         # Legend and grid
         plt.legend(fontsize=10)
-        plt.grid(True, which='both', linestyle='--', linewidth=0.5, color=self.cb_palette['grid_color'], alpha=0.7)
         plt.tight_layout()
         
         # Save the plot
@@ -385,6 +368,8 @@ class VisualizerWithSaving(Visualizer):
         plt.close()
 
 
+
+
 def main():
     # Main Execution
     # Set random seed for reproducibility
@@ -392,11 +377,11 @@ def main():
     np.random.seed(42)
 
     # 1. Simulate the Damped Pendulum (True Dynamics with c=0.5)
-    c_true = 0.5  # True damping coefficient
+    c_true = 1.0  # True damping coefficient
     k = 20.0      # Stiffness coefficient, omega_n^2 = k, so omega_n = sqrt(k) ≈ 4.4721 rad/s
     theta0 = 1.0  # Initial angular displacement
     omega0 = 0.0  # Initial angular velocity
-    total_points = 50
+    total_points = 8
     t_max = 10
     high_res = 1000  # 1000 points per second
     simulator = PendulumSimulator(c=c_true, k=k, theta0=theta0, omega0=omega0, 
@@ -435,7 +420,7 @@ def main():
     except Exception as e:
         print(f"Error saving initial checkpoint: {e}")
 
-    epochs = 100
+    epochs = 5000
     # Define specific checkpoint
     checkpoint_epochs = [0, epochs]  
 
