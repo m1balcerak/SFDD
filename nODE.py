@@ -1,6 +1,7 @@
 # nODE.py
 
 import os
+import time  # Added for timing
 import torch
 import torch.nn as nn
 from torchdiffeq import odeint
@@ -136,6 +137,8 @@ class NeuralODEModel:
         - train_losses (list): List of training loss values per epoch
         - test_losses (list): List of testing loss values per epoch
         - saved_epochs (list): List of epochs where checkpoints were saved
+        - total_duration (float): Total training time in seconds
+        - average_time_per_epoch (float): Average time per epoch in seconds
         """
         # Prepare training data
         y0_train, t_tensor_train, true_traj_train = self.prepare_data(t_train, theta_train, omega_train)
@@ -145,6 +148,11 @@ class NeuralODEModel:
         train_losses = []
         test_losses = []
         saved_epochs = []
+
+        # Start total training timer
+        total_start_time = time.time()
+        # Initialize timer for epochs
+        epoch_start_time = time.time()
 
         for epoch in range(1, epochs + 1):
             self.optimizer.zero_grad()
@@ -160,7 +168,7 @@ class NeuralODEModel:
                 loss_test = self.loss_fn(pred_traj_test, true_traj_test)
                 test_losses.append(loss_test.item())
 
-            # Save checkpoint if current epoch is in checkpoint_epochs
+            # Save checkpoint if needed
             if epoch in checkpoint_epochs:
                 checkpoint_path = os.path.join(RESULTS_DIR, f"checkpoint_epoch_{epoch}.pth")
                 try:
@@ -170,7 +178,22 @@ class NeuralODEModel:
                 except Exception as e:
                     print(f"Error saving checkpoint at epoch {epoch}: {e}")
 
-        return train_losses, test_losses, saved_epochs
+            # Print time every 10 epochs
+            if epoch % 10 == 0:
+                current_time = time.time()
+                elapsed = current_time - epoch_start_time
+                print(f"Epochs {epoch-9}-{epoch} completed in {elapsed:.2f} seconds.")
+                epoch_start_time = current_time  # Reset timer for next 10 epochs
+
+        # End total training timer
+        total_end_time = time.time()
+        total_duration = total_end_time - total_start_time
+        average_time_per_epoch = total_duration / epochs
+
+        print(f"Total training time: {total_duration:.2f} seconds.")
+        print(f"Average time per epoch: {average_time_per_epoch:.2f} seconds.")
+
+        return train_losses, test_losses, saved_epochs, total_duration, average_time_per_epoch
 
     def predict(self, t, y0):
         """
@@ -200,101 +223,167 @@ class VisualizerWithSaving(Visualizer):
         self.results_dir = results_dir
         # Ensure the results directory exists
         os.makedirs(self.results_dir, exist_ok=True)
-
-    def plot_data(self, t_train, theta_train, t_test, theta_test, split_percentage=0.5, freq=1.0):
+        
+        # Define a colorblind-friendly palette (Okabe & Ito, 2008)
+        self.cb_palette = {
+            'high_res_solution': '#0072B2',  # Blue
+            'training_data': '#E69F00',      # Orange
+            'test_data': '#56B4E9',          # Sky Blue (if needed in future)
+            'prediction_1': '#009E73',       # Green
+            'prediction_2': '#CC79A7',       # Purple
+            'prediction_3': '#D55E00',       # Vermillion
+            'train_test_split': '#CC79A7',   # Purple
+            'training_loss': '#0072B2',      # Blue
+            'test_loss': '#E69F00',          # Orange
+            'grid_color': '#999999'           # Gray
+        }
+    
+    def plot_data(self, t_train, theta_train, t_test, theta_test, t_high, theta_high, split_percentage=0.5, freq=1.0):
         """
-        Plot the training and testing data with a split line and save the figure.
+        Plot the high-resolution solution with training scatter data.
 
         Parameters:
         - t_train (np.ndarray): Training time data
         - theta_train (np.ndarray): Training angular displacement data
         - t_test (np.ndarray): Testing time data
         - theta_test (np.ndarray): Testing angular displacement data
-        - split_percentage (float): Split percentage for annotation
-        - freq (float): Natural frequency for title
+        - t_high (np.ndarray): High-resolution time data
+        - theta_high (np.ndarray): High-resolution angular displacement data
+        - split_percentage (float): Split percentage for annotation (default: 0.5)
+        - freq (float): Natural frequency for title (default: 1.0 Hz)
         """
         plt.figure(figsize=(12, 6))
-        plt.scatter(t_train, theta_train, color='blue', label='Training Data', s=10)
-        plt.scatter(t_test, theta_test, color='red', label='Test Data', s=10)
-        plt.axvline(x=t_train[-1], color='green', linestyle='--', label='Train/Test Split')
-        plt.title(f'Damped Pendulum: Training and Test Data Split (Frequency = {freq:.2f} Hz)')
-        plt.xlabel('Time (s)')
-        plt.ylabel('Angular Displacement (θ)')
-        plt.legend()
-        plt.grid(True)
-        # Save the figure
+        
+        # Plot high-res solution as a continuous line
+        plt.plot(t_high, theta_high, color=self.cb_palette['high_res_solution'], label='High-Res Solution', linewidth=2)
+        
+        # Scatter plot for training data
+        plt.scatter(t_train, theta_train, color=self.cb_palette['training_data'], label='Training Data', s=45, alpha=0.8, edgecolors='w')
+        
+        # Removed test scatter plot as per instruction
+        # plt.scatter(t_test, theta_test, color=self.cb_palette['test_data'], label='Test Data', s=30, alpha=0.7, edgecolors='w')
+        
+        # Vertical line to indicate the train/test split
+        #split_time = t_train[-1]
+        #plt.axvline(x=split_time, color=self.cb_palette['train_test_split'], linestyle='--', label='Train/Test Split', linewidth=1.5)
+        
+        # Title and labels
+        plt.title(f'Damped Pendulum: High-Res Solution with Training Data (Frequency = {freq:.2f} Hz)', fontsize=14)
+        plt.xlabel('Time (s)', fontsize=12)
+        plt.ylabel('Angular Displacement (θ)', fontsize=12)
+        
+        # Legend and grid
+        plt.legend(fontsize=10)
+        plt.grid(True, which='both', linestyle='--', linewidth=0.5, color=self.cb_palette['grid_color'], alpha=0.7)
+        plt.tight_layout()
+        
+        # Save the plot
         save_path = os.path.join(self.results_dir, "data_split.png")
-        plt.savefig(save_path)
+        plt.savefig(save_path, dpi=300)
         print(f"Saved data split plot to {save_path}")
         plt.close()
-
-    def plot_predictions(self, t_train, theta_train, t_test, theta_test, predictions_train, predictions_test, checkpoint_epochs):
+    
+    def plot_predictions(self, t_train, theta_train, t_test, theta_test, t_high, theta_high,
+                         predictions_train, predictions_test, predictions_high, checkpoint_epochs):
         """
-        Plot the true and predicted trajectories for training and testing data with multiple checkpoints.
+        Plot the high-resolution solution with true and predicted trajectories from different checkpoints.
 
         Parameters:
         - t_train (np.ndarray): Training time data
         - theta_train (np.ndarray): True training angular displacement
         - t_test (np.ndarray): Testing time data
         - theta_test (np.ndarray): True testing angular displacement
-        - predictions_train (list of np.ndarray): List of predicted training angular displacement arrays
-        - predictions_test (list of np.ndarray): List of predicted testing angular displacement arrays
+        - t_high (np.ndarray): High-resolution time data
+        - theta_high (np.ndarray): High-resolution angular displacement data
+        - predictions_train (list of torch.Tensor or np.ndarray): Predicted training angular displacement arrays
+        - predictions_test (list of torch.Tensor or np.ndarray): Predicted testing angular displacement arrays
+        - predictions_high (list of torch.Tensor or np.ndarray): Predicted high-res angular displacement arrays
         - checkpoint_epochs (list of int): List of epochs corresponding to each checkpoint
         """
         plt.figure(figsize=(12, 6))
-        # Plot true training and testing data
-        plt.plot(t_train, theta_train, 'b-', label='True Training Data')
-        plt.plot(t_test, theta_test, 'r-', label='True Test Data')
-
-        # Define color maps for training and testing predictions
-        cmap_train = plt.get_cmap('Blues')
-        cmap_test = plt.get_cmap('Reds')
-
-        num_checkpoints = len(checkpoint_epochs)
+        
+        # Plot high-res solution as a continuous line
+        plt.plot(t_high, theta_high, color=self.cb_palette['high_res_solution'], label='High-Res Solution', linewidth=2)
+        
+        # Plot true training data as scatter points
+        plt.scatter(t_train, theta_train, color=self.cb_palette['training_data'], label='Training Data', s=45, alpha=0.8, edgecolors='w')
+        
+        # Removed test scatter plot as per instruction
+        # plt.scatter(t_test, theta_test, color=self.cb_palette['test_data'], label='Test Data', s=30, alpha=0.7, edgecolors='w')
+        
+        # Define colors for checkpoints
+        # Cycle through prediction colors if there are more checkpoints than colors
+        prediction_colors = [
+            self.cb_palette['prediction_1'],
+            self.cb_palette['prediction_2'],
+            self.cb_palette['prediction_3'],
+            '#56B4E9',  # Additional distinct color (Sky Blue)
+            '#F0E442'   # Additional distinct color (Yellow)
+        ]
+        num_colors = len(prediction_colors)
+        
         for idx, epoch in enumerate(checkpoint_epochs):
-            if epoch == 0:
-                alpha = 0.3  # initial checkpoint
+            color = prediction_colors[idx % num_colors]
+            
+            # Handle torch.Tensor predictions by converting to numpy
+            if isinstance(predictions_high[idx], torch.Tensor):
+                pred_high = predictions_high[idx].cpu().detach().numpy()
             else:
-                alpha = 0.3 + 0.7 * (idx) / (num_checkpoints - 1) if num_checkpoints > 1 else 1.0
-            color_train = cmap_train(alpha)
-            color_test = cmap_test(alpha)
-            plt.plot(t_train, predictions_train[idx], color=color_train, linestyle='--', label=f'Train Prediction Epoch {epoch}')
-            plt.plot(t_test, predictions_test[idx], color=color_test, linestyle='--', label=f'Test Prediction Epoch {epoch}')
-
-        # Split line
-        plt.axvline(x=t_train[-1], color='green', linestyle='--', label='Train/Test Split')
-        plt.title('Damped Pendulum: True vs Predicted Trajectories at Checkpoints')
-        plt.xlabel('Time (s)')
-        plt.ylabel('Angular Displacement (θ)')
-        plt.legend()
-        plt.grid(True)
-        # Save the figure
-        save_path = os.path.join(self.results_dir, "predictions_vs_true_checkpoints.png")
-        plt.savefig(save_path)
-        print(f"Saved predictions vs true data with checkpoints plot to {save_path}")
+                pred_high = predictions_high[idx]
+            
+            # Plot predicted high-res data
+            plt.plot(t_high, pred_high, color=color, linestyle='--', label=f'Prediction Epoch {epoch}', linewidth=2)
+        
+        # Vertical line to indicate the train/test split
+        split_time = t_train[-1]
+        plt.axvline(x=split_time, color=self.cb_palette['train_test_split'], linestyle='--', label='Train/Test Split', linewidth=1.5)
+        
+        # Title and labels
+        plt.title('Damped Pendulum: True vs Predicted High-Res Trajectories at Checkpoints', fontsize=14)
+        plt.xlabel('Time (s)', fontsize=12)
+        plt.ylabel('Angular Displacement (θ)', fontsize=12)
+        
+        # Legend and grid
+        plt.legend(fontsize=10)
+        plt.grid(True, which='both', linestyle='--', linewidth=0.5, color=self.cb_palette['grid_color'], alpha=0.7)
+        plt.tight_layout()
+        
+        # Save the plot
+        save_path = os.path.join(self.results_dir, "predictions_vs_true_high_res_checkpoints.png")
+        plt.savefig(save_path, dpi=300)
+        print(f"Saved high-res predictions vs true data with checkpoints plot to {save_path}")
         plt.close()
-
+    
     def plot_losses(self, train_losses, test_losses):
         """
         Plot training and test losses over epochs and save the figure.
 
         Parameters:
-        - train_losses (list): List of training loss values
-        - test_losses (list): List of testing loss values
+        - train_losses (list or np.ndarray): List of training loss values
+        - test_losses (list or np.ndarray): List of testing loss values
         """
         plt.figure(figsize=(10, 5))
-        plt.plot(train_losses, label='Training MSE Loss')
-        plt.plot(test_losses, label='Test MSE Loss')
-        plt.title('Training and Test MSE Loss over Epochs')
-        plt.xlabel('Epoch')
-        plt.ylabel('MSE Loss')
-        plt.legend()
-        plt.grid(True)
-        # Save the figure
+        
+        # Plot training and test losses
+        plt.plot(train_losses, label='Training MSE Loss', color=self.cb_palette['training_loss'], linewidth=2)
+        plt.plot(test_losses, label='Test MSE Loss', color=self.cb_palette['test_loss'], linewidth=2)
+        
+        # Title and labels
+        plt.title('Training and Test MSE Loss over Epochs', fontsize=14)
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('MSE Loss', fontsize=12)
+        
+        # Legend and grid
+        plt.legend(fontsize=10)
+        plt.grid(True, which='both', linestyle='--', linewidth=0.5, color=self.cb_palette['grid_color'], alpha=0.7)
+        plt.tight_layout()
+        
+        # Save the plot
         save_path = os.path.join(self.results_dir, "training_test_losses.png")
-        plt.savefig(save_path)
+        plt.savefig(save_path, dpi=300)
         print(f"Saved training and test losses plot to {save_path}")
         plt.close()
+
 
 def main():
     # Main Execution
@@ -304,19 +393,22 @@ def main():
 
     # 1. Simulate the Damped Pendulum (True Dynamics with c=0.5)
     c_true = 0.5  # True damping coefficient
-    k = 20.0        # Stiffness coefficient, omega_n^2 = k, so omega_n = sqrt(k) = 1.0 rad/s
-    theta0 = 1.0   # Initial angular displacement
-    omega0 = 0.0   # Initial angular velocity
+    k = 20.0      # Stiffness coefficient, omega_n^2 = k, so omega_n = sqrt(k) ≈ 4.4721 rad/s
+    theta0 = 1.0  # Initial angular displacement
+    omega0 = 0.0  # Initial angular velocity
     total_points = 50
     t_max = 10
     high_res = 1000  # 1000 points per second
-    simulator = PendulumSimulator(c=c_true, k=k, theta0=theta0, omega0=omega0, total_points=total_points, t_max=t_max, high_res=high_res)
+    simulator = PendulumSimulator(c=c_true, k=k, theta0=theta0, omega0=omega0, 
+                                  total_points=total_points, t_max=t_max, high_res=high_res)
     t = simulator.t
     theta = simulator.theta
     omega = simulator.omega  # Extract omega from the simulation
+    t_high = simulator.t_high
+    theta_high = simulator.theta_high  # High-res data
 
     # 2. Handle the Data
-    split_percentage = 0.5  # 200 train, 200 test
+    split_percentage = 0.5  
     data_handler = DataHandler(t, theta, split_percentage=split_percentage)
     t_train, theta_train, t_test, theta_test = data_handler.t_train, data_handler.theta_train, data_handler.t_test, data_handler.theta_test
 
@@ -326,13 +418,15 @@ def main():
     omega_test = omega[split_index:]
 
     # 3. Visualize the Data Split
-    visualizer = VisualizerWithSaving()
-    visualizer.plot_data(t_train, theta_train, t_test, theta_test, split_percentage=split_percentage, freq=np.sqrt(k))
+    visualizer = VisualizerWithSaving(results_dir=RESULTS_DIR)
+    visualizer.plot_data(t_train, theta_train, t_test, theta_test, t_high, theta_high, 
+                        split_percentage=split_percentage, freq=np.sqrt(k))
 
     # 4. Initialize and Train the Neural ODE Model
     # Prior physical model with c=0 (undamped)
     c_prior = 0.0  # Prior damping coefficient
-    model = NeuralODEModel(input_dim=2, hidden_dim=64, output_dim=2, lr=1e-3, device=device, c=c_prior, k=k)
+    model = NeuralODEModel(input_dim=2, hidden_dim=64, output_dim=2, lr=1e-3, 
+                          device=device, c=c_prior, k=k)
     print("Saving initial checkpoint at epoch 0...")
     initial_checkpoint_path = os.path.join(RESULTS_DIR, f"checkpoint_epoch_0.pth")
     try:
@@ -341,14 +435,15 @@ def main():
     except Exception as e:
         print(f"Error saving initial checkpoint: {e}")
 
-    epochs = 300
-    # Define specific checkpoint epochs: 0, 50%, 100%
-    checkpoint_epochs = [0, epochs // 2, epochs]  # [0, 250, 500]
+    epochs = 100
+    # Define specific checkpoint
+    checkpoint_epochs = [0, epochs]  
 
     # Exclude epoch 0 from training checkpoints since it's already saved
     training_checkpoint_epochs = [epoch for epoch in checkpoint_epochs if epoch != 0]
 
-    train_losses, test_losses, saved_epochs = model.train(
+    # Capture the additional returned values
+    train_losses, test_losses, saved_epochs, total_duration, average_time_per_epoch = model.train(
         t_train, theta_train, omega_train,
         t_test, theta_test, omega_test,
         epochs=epochs,
@@ -360,6 +455,7 @@ def main():
     all_checkpoint_epochs = checkpoint_epochs
     predictions_train = []
     predictions_test = []
+    predictions_high = []  # To store high-res predictions
 
     for epoch in all_checkpoint_epochs:
         checkpoint_path = os.path.join(RESULTS_DIR, f"checkpoint_epoch_{epoch}.pth")
@@ -368,7 +464,7 @@ def main():
             continue
         # Load the checkpoint
         try:
-            model.ode_func.load_state_dict(torch.load(checkpoint_path))
+            model.ode_func.load_state_dict(torch.load(checkpoint_path, map_location=device))
             print(f"Loaded checkpoint from epoch {epoch}")
         except Exception as e:
             print(f"Error loading checkpoint at epoch {epoch}: {e}")
@@ -376,17 +472,23 @@ def main():
         # Prepare initial states
         y0_train = torch.tensor([theta_train[0], omega_train[0]], dtype=torch.float32).to(device)
         y0_test = torch.tensor([theta_test[0], omega_test[0]], dtype=torch.float32).to(device)
+        y0_high = torch.tensor([theta_high[0], simulator.omega_high[0]], dtype=torch.float32).to(device)  # Assuming omega_high exists
+
         # Make predictions
         pred_train = model.predict(t_train, y0_train)[:, 0]  # Extract theta
         pred_test = model.predict(t_test, y0_test)[:, 0]     # Extract theta
+        pred_high = model.predict(t_high, y0_high)[:, 0]     # Extract theta for high-res
+
         predictions_train.append(pred_train)
         predictions_test.append(pred_test)
+        predictions_high.append(pred_high)
         print(f"Collected predictions from checkpoint at epoch {epoch}")
 
     # 6. Visualize Predictions vs True Data with Checkpoints
     visualizer.plot_predictions(
         t_train, theta_train, t_test, theta_test,
-        predictions_train, predictions_test,
+        t_high, theta_high,
+        predictions_train, predictions_test, predictions_high,
         all_checkpoint_epochs
     )
 
@@ -394,10 +496,17 @@ def main():
     visualizer.plot_losses(train_losses, test_losses)
 
     # 8. Summary of Results
-    final_train_mse = Evaluator.compute_mse(theta_train, predictions_train[-1])
-    final_test_mse = Evaluator.compute_mse(theta_test, predictions_test[-1])
+    # Ensure predictions are numpy arrays for MSE computation
+    final_pred_train = predictions_train[-1].cpu().detach().numpy() if isinstance(predictions_train[-1], torch.Tensor) else predictions_train[-1]
+    final_pred_test = predictions_test[-1].cpu().detach().numpy() if isinstance(predictions_test[-1], torch.Tensor) else predictions_test[-1]
+    final_train_mse = Evaluator.compute_mse(theta_train, final_pred_train)
+    final_test_mse = Evaluator.compute_mse(theta_test, final_pred_test)
     print(f"Final Training MSE: {final_train_mse:.6f}")
     print(f"Final Test MSE: {final_test_mse:.6f}")
+
+    # Correctly print the total training time and average time per epoch
+    print(f"Total training time: {total_duration:.2f} seconds.")
+    print(f"Average time per epoch: {average_time_per_epoch:.2f} seconds.")
 
 if __name__ == "__main__":
     main()

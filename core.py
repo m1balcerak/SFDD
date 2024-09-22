@@ -4,6 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 import torch
+import os
+
 
 def compute_fp(y, c=0.0, k=1.0):
     """
@@ -80,6 +82,9 @@ class PendulumSimulator:
         self.t = None
         self.theta = None
         self.omega = None
+        self.t_high = None
+        self.theta_high = None
+        self.omega_high = None
         self.simulate()
 
     def dynamics(self, t, y):
@@ -93,25 +98,28 @@ class PendulumSimulator:
         # High-resolution time array
         t_eval_high = np.linspace(0, self.t_max, self.high_res * self.t_max + 1)  # 1000 points/sec
         sol = solve_ivp(self.dynamics, [0, self.t_max], y0, t_eval=t_eval_high, method='RK45')
+        
+        # Store high-res solution
+        self.t_high = sol.t
+        self.theta_high = sol.y[0]
+        self.omega_high = sol.y[1]
+        
         # Downsample to desired total_points
-        step = len(sol.t) // self.total_points
-        if step < 1:
-            step = 1
+        step = max(len(sol.t) // self.total_points, 1)
         self.t = sol.t[::step]
         self.theta = sol.y[0][::step]
         self.omega = sol.y[1][::step]
-        # Ensure that we have exactly total_points by trimming if necessary
+        
+        # Ensure that we have exactly total_points by trimming or padding
         if len(self.t) > self.total_points:
             self.t = self.t[:self.total_points]
             self.theta = self.theta[:self.total_points]
             self.omega = self.omega[:self.total_points]
         elif len(self.t) < self.total_points:
-            # If downsampling doesn't reach total_points, pad the arrays
             padding_length = self.total_points - len(self.t)
             self.t = np.pad(self.t, (0, padding_length), 'edge')
             self.theta = np.pad(self.theta, (0, padding_length), 'edge')
             self.omega = np.pad(self.omega, (0, padding_length), 'edge')
-
 class DataHandler:
     def __init__(self, t, theta, split_percentage=0.5):
         """
@@ -147,70 +155,126 @@ class Evaluator:
         return np.mean((true - pred) ** 2)
 
 class Visualizer:
-    def plot_data(self, t_train, theta_train, t_test, theta_test, split_percentage=0.5, freq=1.0):
+    def __init__(self, results_dir='results'):
         """
-        Plot the training and testing data with a split line.
+        Initialize the Visualizer with a directory to save plots.
+
+        Parameters:
+        - results_dir (str): Directory path where plots will be saved.
+        """
+        self.results_dir = results_dir
+        os.makedirs(self.results_dir, exist_ok=True)
+
+    def plot_data(self, t_train, theta_train, t_test, theta_test, t_high, theta_high, split_percentage=0.5, freq=1.0):
+        """
+        Plot the high-resolution solution with training and testing scatter data.
 
         Parameters:
         - t_train (np.ndarray): Training time data
         - theta_train (np.ndarray): Training angular displacement data
         - t_test (np.ndarray): Testing time data
         - theta_test (np.ndarray): Testing angular displacement data
-        - split_percentage (float): Split percentage for annotation
-        - freq (float): Natural frequency for title
+        - t_high (np.ndarray): High-resolution time data
+        - theta_high (np.ndarray): High-resolution angular displacement data
+        - split_percentage (float): Split percentage for annotation (default: 0.5)
+        - freq (float): Natural frequency for title (default: 1.0 Hz)
         """
         plt.figure(figsize=(12, 6))
-        plt.scatter(t_train, theta_train, color='blue', label='Training Data', s=10)
-        plt.scatter(t_test, theta_test, color='red', label='Test Data', s=10)
-        plt.axvline(x=t_train[-1], color='green', linestyle='--', label='Train/Test Split')
-        plt.title(f'Damped Pendulum: Training and Test Data Split (Frequency = {freq:.2f} Hz)')
+        
+        # Plot high-res solution as a continuous line
+        plt.plot(t_high, theta_high, color='blue', label='High-Res Solution', linewidth=2)
+        
+        # Scatter plot for training data
+        plt.scatter(t_train, theta_train, color='green', label='Training Data', s=30, alpha=0.7)
+        
+        # Scatter plot for testing data
+        plt.scatter(t_test, theta_test, color='red', label='Test Data', s=30, alpha=0.7)
+        
+        # Vertical line to indicate the train/test split
+        split_time = t_train[-1]
+        plt.axvline(x=split_time, color='purple', linestyle='--', label='Train/Test Split')
+        
+        # Title and labels
+        plt.title(f'Damped Pendulum: High-Res Solution with Training and Test Data (Frequency = {freq:.2f} Hz)')
         plt.xlabel('Time (s)')
         plt.ylabel('Angular Displacement (θ)')
+        
+        # Legend and grid
         plt.legend()
         plt.grid(True)
-        plt.show()
+        plt.tight_layout()
+        
+        # Save the plot
+        save_path = os.path.join(self.results_dir, "data_split.png")
+        plt.savefig(save_path)
+        print(f"Saved data split plot to {save_path}")
+        plt.close()
 
-    def plot_predictions(self, t_train, theta_train, t_test, theta_test, predictions_train, predictions_test, checkpoint_epochs):
+    def plot_predictions(self, t_train, theta_train, t_test, theta_test, t_high, theta_high,
+                         predictions_train, predictions_test, checkpoint_epochs):
         """
-        Plot the true and predicted trajectories for training and testing data with multiple checkpoints.
+        Plot the high-resolution solution with true and predicted trajectories from different checkpoints.
 
         Parameters:
         - t_train (np.ndarray): Training time data
         - theta_train (np.ndarray): True training angular displacement
         - t_test (np.ndarray): Testing time data
         - theta_test (np.ndarray): True testing angular displacement
-        - predictions_train (list of np.ndarray): List of predicted training angular displacement arrays
-        - predictions_test (list of np.ndarray): List of predicted testing angular displacement arrays
+        - t_high (np.ndarray): High-resolution time data
+        - theta_high (np.ndarray): High-resolution angular displacement data
+        - predictions_train (list of torch.Tensor or np.ndarray): Predicted training angular displacement arrays
+        - predictions_test (list of torch.Tensor or np.ndarray): Predicted testing angular displacement arrays
         - checkpoint_epochs (list of int): List of epochs corresponding to each checkpoint
         """
         plt.figure(figsize=(12, 6))
-        # Plot true training and testing data
-        plt.plot(t_train, theta_train, 'b-', label='True Training Data')
-        plt.plot(t_test, theta_test, 'r-', label='True Test Data')
-
-        # Define color maps for training and testing predictions
-        cmap_train = plt.get_cmap('Blues')
-        cmap_test = plt.get_cmap('Reds')
-
+        
+        # Plot high-res solution as a continuous line
+        plt.plot(t_high, theta_high, color='blue', label='High-Res Solution', linewidth=2)
+        
+        # Plot true training and testing data as scatter points
+        plt.scatter(t_train, theta_train, color='green', label='Training Data', s=30, alpha=0.7)
+        plt.scatter(t_test, theta_test, color='red', label='Test Data', s=30, alpha=0.7)
+        
+        # Define color maps for different checkpoints
+        cmap = plt.get_cmap('viridis')
         num_checkpoints = len(checkpoint_epochs)
+        colors = cmap(np.linspace(0, 1, num_checkpoints))
+        
         for idx, epoch in enumerate(checkpoint_epochs):
-            if epoch == 0:
-                alpha = 0.3  # initial checkpoint
+            color = colors[idx]
+            
+            # Handle torch.Tensor predictions by converting to numpy
+            if isinstance(predictions_train[idx], torch.Tensor):
+                pred_train = predictions_train[idx].cpu().detach().numpy()
             else:
-                alpha = 0.3 + 0.7 * (idx) / (num_checkpoints - 1) if num_checkpoints > 1 else 1.0
-            color_train = cmap_train(alpha)
-            color_test = cmap_test(alpha)
-            plt.plot(t_train, predictions_train[idx], color=color_train, linestyle='--', label=f'Train Prediction Epoch {epoch}')
-            plt.plot(t_test, predictions_test[idx], color=color_test, linestyle='--', label=f'Test Prediction Epoch {epoch}')
-
-        # Split line
-        plt.axvline(x=t_train[-1], color='green', linestyle='--', label='Train/Test Split')
+                pred_train = predictions_train[idx]
+                
+            if isinstance(predictions_test[idx], torch.Tensor):
+                pred_test = predictions_test[idx].cpu().detach().numpy()
+            else:
+                pred_test = predictions_test[idx]
+            
+            # Plot predicted training data
+            plt.plot(t_train, pred_train, color=color, linestyle='--', label=f'Train Prediction Epoch {epoch}')
+            
+            # Plot predicted testing data
+            plt.plot(t_test, pred_test, color=color, linestyle=':', label=f'Test Prediction Epoch {epoch}')
+        
+        # Vertical line to indicate the train/test split
+        split_time = t_train[-1]
+        plt.axvline(x=split_time, color='purple', linestyle='--', label='Train/Test Split')
+        
+        # Title and labels
         plt.title('Damped Pendulum: True vs Predicted Trajectories at Checkpoints')
         plt.xlabel('Time (s)')
         plt.ylabel('Angular Displacement (θ)')
+        
+        # Legend and grid
         plt.legend()
         plt.grid(True)
-        # Save the figure
+        plt.tight_layout()
+        
+        # Save the plot
         save_path = os.path.join(self.results_dir, "predictions_vs_true_checkpoints.png")
         plt.savefig(save_path)
         print(f"Saved predictions vs true data with checkpoints plot to {save_path}")
@@ -221,18 +285,26 @@ class Visualizer:
         Plot training and test losses over epochs and save the figure.
 
         Parameters:
-        - train_losses (list): List of training loss values
-        - test_losses (list): List of testing loss values
+        - train_losses (list or np.ndarray): List of training loss values
+        - test_losses (list or np.ndarray): List of testing loss values
         """
         plt.figure(figsize=(10, 5))
-        plt.plot(train_losses, label='Training MSE Loss')
-        plt.plot(test_losses, label='Test MSE Loss')
+        
+        # Plot training and test losses
+        plt.plot(train_losses, label='Training MSE Loss', color='blue')
+        plt.plot(test_losses, label='Test MSE Loss', color='orange')
+        
+        # Title and labels
         plt.title('Training and Test MSE Loss over Epochs')
         plt.xlabel('Epoch')
         plt.ylabel('MSE Loss')
+        
+        # Legend and grid
         plt.legend()
         plt.grid(True)
-        # Save the figure
+        plt.tight_layout()
+        
+        # Save the plot
         save_path = os.path.join(self.results_dir, "training_test_losses.png")
         plt.savefig(save_path)
         print(f"Saved training and test losses plot to {save_path}")
