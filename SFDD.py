@@ -90,7 +90,7 @@ class SFDDModel:
 
     def parametrize_trajectory(self, t_train, theta_train, omega_train):
         """
-        Parametrize the trajectory with additional in-between points.
+        Parametrize the trajectory with additional in-between points using cubic Hermite interpolation.
 
         Parameters:
         - t_train (np.ndarray): Training time data
@@ -101,7 +101,7 @@ class SFDDModel:
         self.theta_train = torch.tensor(theta_train, dtype=torch.float32).to(self.device)
         self.omega_train = torch.tensor(omega_train, dtype=torch.float32).to(self.device)
 
-        # Create in-between points
+        # Create in-between points using cubic Hermite interpolation
         self.inbetweens = []
         self.num_points = len(t_train)
         for i in range(self.num_points - 1):
@@ -111,12 +111,33 @@ class SFDDModel:
             theta_end = theta_train[i + 1]
             omega_start = omega_train[i]
             omega_end = omega_train[i + 1]
+            delta_t = t_end - t_start
 
-            # Linear interpolation for in-between points
             for j in range(1, self.num_interpolations + 1):
                 alpha = j / (self.num_interpolations + 1)
-                theta_interp = theta_start + alpha * (theta_end - theta_start)
-                omega_interp = omega_start + alpha * (omega_end - omega_start)
+
+                # Cubic Hermite basis functions
+                h00 = 2 * alpha**3 - 3 * alpha**2 + 1
+                h10 = alpha**3 - 2 * alpha**2 + alpha
+                h01 = -2 * alpha**3 + 3 * alpha**2
+                h11 = alpha**3 - alpha**2
+
+                # Interpolated theta
+                theta_interp = (
+                    h00 * theta_start +
+                    h10 * delta_t * omega_start +
+                    h01 * theta_end +
+                    h11 * delta_t * omega_end
+                )
+
+                # Derivative of cubic Hermite for omega interpolation
+                omega_interp = (
+                    (6 * alpha**2 - 6 * alpha) * theta_start / delta_t +
+                    (3 * alpha**2 - 4 * alpha + 1) * omega_start +
+                    (-6 * alpha**2 + 6 * alpha) * theta_end / delta_t +
+                    (3 * alpha**2 - 2 * alpha) * omega_end
+                )
+
                 self.inbetweens.append({
                     'theta': theta_interp,
                     'omega': omega_interp
@@ -208,10 +229,10 @@ class SFDDModel:
         theta_diff = self.all_theta[2:] - 2 * self.all_theta[1:-1] + self.all_theta[:-2]
         omega_diff = self.all_omega[2:] - 2 * self.all_omega[1:-1] + self.all_omega[:-2]
 
-        smooth_loss = torch.mean(theta_diff ** 2) + torch.mean(omega_diff ** 2)
+        smooth_loss =  torch.mean(omega_diff ** 2) #torch.mean(theta_diff ** 2) + torch.mean(omega_diff ** 2)
 
         # Total loss: balance reconstruction, dynamics, and smoothness
-        total_loss = recon_loss + dyn_loss/100 + self.lambda_smooth * smooth_loss
+        total_loss = recon_loss + dyn_loss / 100 + self.lambda_smooth * smooth_loss
         return total_loss, recon_loss, dyn_loss, smooth_loss
 
     def train_model(self, epochs=10, checkpoint_epochs=[]):
@@ -281,6 +302,7 @@ class SFDDModel:
                 checkpoint_path = os.path.join(RESULTS_DIR, f"SFDD_checkpoint_epoch_{epoch}.pth")
                 try:
                     torch.save({
+                        'all_t': self.all_t.detach(),
                         'all_theta': self.all_theta.detach(),
                         'all_omega': self.all_omega.detach(),
                         'fa_net_state_dict': self.fa_net.state_dict()
@@ -331,6 +353,78 @@ class SFDDModel:
         """
         return self.all_t.cpu().detach().numpy(), self.all_theta.cpu().detach().numpy(), self.all_omega.cpu().detach().numpy()
 
+def integrate_dynamics(theta0, omega0, t_start, t_end, dt, fa_net, compute_fp, device):
+    """
+    Integrate the dynamics using RK4 method beyond the training dataset.
+
+    Parameters:
+    - theta0 (float): Initial angular displacement
+    - omega0 (float): Initial angular velocity
+    - t_start (float): Start time for integration
+    - t_end (float): End time for integration
+    - dt (float): Time step for integration
+    - fa_net (nn.Module): Learned augmentation network
+    - compute_fp (function): Function to compute physical dynamics
+    - device (torch.device): Device to perform computations
+
+    Returns:
+    - t_extended (np.ndarray): Extended time array
+    - theta_extended (np.ndarray): Extended angular displacement array
+    - omega_extended (np.ndarray): Extended angular velocity array
+    """
+    fa_net.eval()  # Set to evaluation mode
+    t_extended = [t_start]
+    theta_extended = [theta0]
+    omega_extended = [omega0]
+    t_current = t_start
+    theta_current = torch.tensor(theta0, dtype=torch.float32, device=device)
+    omega_current = torch.tensor(omega0, dtype=torch.float32, device=device)
+
+    with torch.no_grad():
+        while t_current < t_end:
+            # Compute k1
+            y = torch.stack([theta_current, omega_current])
+            fp = compute_fp(y)
+            fa = fa_net(y)
+            dy_dt1 = fp + fa
+
+            # Compute k2
+            y_k2 = torch.stack([theta_current + 0.5 * dt * dy_dt1[0],
+                                omega_current + 0.5 * dt * dy_dt1[1]])
+            fp_k2 = compute_fp(y_k2)
+            fa_k2 = fa_net(y_k2)
+            dy_dt2 = fp_k2 + fa_k2
+
+            # Compute k3
+            y_k3 = torch.stack([theta_current + 0.5 * dt * dy_dt2[0],
+                                omega_current + 0.5 * dt * dy_dt2[1]])
+            fp_k3 = compute_fp(y_k3)
+            fa_k3 = fa_net(y_k3)
+            dy_dt3 = fp_k3 + fa_k3
+
+            # Compute k4
+            y_k4 = torch.stack([theta_current + dt * dy_dt3[0],
+                                omega_current + dt * dy_dt3[1]])
+            fp_k4 = compute_fp(y_k4)
+            fa_k4 = fa_net(y_k4)
+            dy_dt4 = fp_k4 + fa_k4
+
+            # Update state
+            theta_next = theta_current + (dt / 6.0) * (dy_dt1[0] + 2 * dy_dt2[0] + 2 * dy_dt3[0] + dy_dt4[0])
+            omega_next = omega_current + (dt / 6.0) * (dy_dt1[1] + 2 * dy_dt2[1] + 2 * dy_dt3[1] + dy_dt4[1])
+
+            # Update current state
+            t_current += dt
+            t_extended.append(t_current)
+            theta_extended.append(theta_next.item())
+            omega_extended.append(omega_next.item())
+
+            theta_current = theta_next
+            omega_current = omega_next
+
+    fa_net.train()  # Revert to training mode
+    return np.array(t_extended), np.array(theta_extended), np.array(omega_extended)
+
 class VisualizerSFDD:
     def __init__(self, results_dir=RESULTS_DIR):
         """
@@ -345,56 +439,76 @@ class VisualizerSFDD:
         self.cb_palette = {
             'true_solution': '#0072B2',         # Blue
             'training_data': '#E69F00',         # Orange
-            'optimized_inbetween': '#009E73',   # Green
-            'grid_color': '#999999'              # Gray
+            'grid_color': '#999999',             # Gray
+            'checkpoint0': '#00FF00',            # Green for checkpoint 0
+            'checkpoint_colors': plt.cm.viridis(np.linspace(0, 1, 10))  # Other checkpoints
         }
 
-    def plot_trajectory(self, t_true, theta_true, t_optimized, theta_optimized, 
-                        t_train, theta_train, mask, freq=1.0):
+    def plot_multiple_trajectories(self, t_true, theta_true, checkpoints_predictions, 
+                                   checkpoints_extended, 
+                                   t_train, theta_train, mask, freq=1.0, num_interpolations=5):
         """
-        Plot the true trajectory, training points, and in-between optimized points.
+        Plot the true trajectory, training points, and all optimized trajectories from checkpoints,
+        including their extended trajectories beyond the training dataset.
 
         Parameters:
         - t_true (np.ndarray): High-resolution true time data
         - theta_true (np.ndarray): High-resolution true angular displacement
-        - t_optimized (np.ndarray): Optimized time data
-        - theta_optimized (np.ndarray): Optimized angular displacement
+        - checkpoints_predictions (dict): Dictionary mapping epoch to (t_all, theta_all, omega_all) tuples
+        - checkpoints_extended (dict): Dictionary mapping epoch to (t_ext, theta_ext, omega_ext) tuples
         - t_train (np.ndarray): Training time data
         - theta_train (np.ndarray): Training angular displacement
         - mask (np.ndarray): Boolean mask indicating training points in optimized data
         - freq (float): Natural frequency for title
+        - num_interpolations (int): Number of in-between points between training points
         """
         plt.figure(figsize=(12, 6))
         
         # Plot true solution
         plt.plot(t_true, theta_true, color=self.cb_palette['true_solution'], label='True Solution', linewidth=2)
         
-        # Identify in-between points
-        in_between_mask = ~mask
-        
-        # Plot in-between optimized points
-        plt.scatter(t_optimized[in_between_mask], theta_optimized[in_between_mask], 
-                    color=self.cb_palette['optimized_inbetween'], label='Optimized In-Between Points', 
-                    s=15, alpha=0.6)
-        
         # Plot training points
         plt.scatter(t_train, theta_train, color=self.cb_palette['training_data'], 
                     label='Training Data', s=45, alpha=1.0, edgecolors='w')
         
+        # Determine the number of checkpoints and assign colors accordingly
+        num_checkpoints = len(checkpoints_predictions)
+        
+        for idx, (epoch, (t_all, theta_opt, _)) in enumerate(sorted(checkpoints_predictions.items())):
+            if epoch == 0:
+                color = self.cb_palette['checkpoint0']  # Green for epoch 0
+            else:
+                # Assign other colors from the colormap
+                color = self.cb_palette['checkpoint_colors'][idx % len(self.cb_palette['checkpoint_colors'])]
+            
+            label = f'Checkpoint {epoch}'
+            
+            # Plot all optimized points as scatter
+            plt.scatter(t_all, theta_opt, color=color, label=label, s=15, alpha=0.6)
+            
+            # Plot extended trajectory if available
+            if epoch in checkpoints_extended:
+                t_ext, theta_ext, _ = checkpoints_extended[epoch]
+                plt.plot(t_ext, theta_ext, color=color, linestyle='--', alpha=0.8, label=f'Extended {epoch}')
+        
         # Title and labels
-        plt.title(f'SFDD: Optimized Trajectory vs True Solution (Frequency = {freq:.2f} Hz)', fontsize=14)
+        plt.title(f'SFDD: Optimized and Extended Trajectories from Checkpoints vs True Solution (Frequency = {freq:.2f} Hz)', fontsize=14)
         plt.xlabel('Time (s)', fontsize=12)
         plt.ylabel('Angular Displacement (θ)', fontsize=12)
         
-        # Legend and grid
-        plt.legend(fontsize=10)
+        # Create custom legend to avoid duplicate labels
+        handles, labels = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        plt.legend(by_label.values(), by_label.keys(), fontsize=10, loc='upper right')
+        
+        # Grid and layout
         plt.grid(True, color=self.cb_palette['grid_color'], linestyle='--', linewidth=0.5)
         plt.tight_layout()
         
         # Save the plot
-        save_path = os.path.join(self.results_dir, "SFDD_trajectory.png")
+        save_path = os.path.join(self.results_dir, "SFDD_trajectories_all_checkpoints_extended.png")
         plt.savefig(save_path, dpi=300)
-        print(f"Saved optimized trajectory plot to {save_path}")
+        print(f"Saved all checkpoints' extended trajectories plot to {save_path}")
         plt.close()
 
     def plot_losses(self, train_losses, recon_losses, dyn_losses, smooth_losses):
@@ -434,7 +548,7 @@ def main_SFDD():
     k = 20.0      # Stiffness coefficient
     theta0 = 1.0  # Initial angular displacement
     omega0 = 0.0  # Initial angular velocity
-    total_points = 20  # Increased for better resolution
+    total_points = 12  # Increased for better resolution
     t_max = 10
     high_res = 1000  # 1000 points per second
     simulator = PendulumSimulator(c=c_true, k=k, theta0=theta0, omega0=omega0, 
@@ -461,12 +575,13 @@ def main_SFDD():
     sfdd_model = SFDDModel(
         t_train, theta_train, omega_train, 
         c=c_prior, k=k, device=device, 
-        num_interpolations=20, lr=1e-3, lambda_smooth=1e-4
+        num_interpolations=10, lr=1e-3, lambda_smooth=1e-2
     )
     print("Saving initial checkpoint at epoch 0...")
     initial_checkpoint_path = os.path.join(RESULTS_DIR, f"SFDD_checkpoint_epoch_0.pth")
     try:
         torch.save({
+            'all_t': sfdd_model.all_t.detach(),
             'all_theta': sfdd_model.all_theta.detach(),
             'all_omega': sfdd_model.all_omega.detach(),
             'fa_net_state_dict': sfdd_model.fa_net.state_dict()
@@ -475,8 +590,8 @@ def main_SFDD():
     except Exception as e:
         print(f"Error saving initial checkpoint: {e}")
 
-    epochs = 2000  # Set epochs to 1000 for thorough training
-    checkpoint_epochs = [0, epochs]  # Define specific checkpoints
+    epochs = 20000  # Set epochs as needed
+    checkpoint_epochs = [0, epochs]  # Save checkpoints at epoch 0 and epoch=epochs
 
     # Exclude epoch 0 from training checkpoints since it's already saved
     training_checkpoint_epochs = [epoch for epoch in checkpoint_epochs if epoch != 0]
@@ -491,6 +606,11 @@ def main_SFDD():
     # Including the initial checkpoint at epoch 0
     all_checkpoint_epochs = checkpoint_epochs
     predictions = {}
+    predictions_extended = {}  # To store extended trajectories
+
+    # Define integration parameters
+    t_extend = 2.0  # Extend by 2 seconds beyond training data
+    dt = 0.001      # Integration time step
 
     for epoch in all_checkpoint_epochs:
         checkpoint_path = os.path.join(RESULTS_DIR, f"SFDD_checkpoint_epoch_{epoch}.pth")
@@ -501,12 +621,38 @@ def main_SFDD():
         try:
             checkpoint = torch.load(checkpoint_path, map_location=device)
             # Update the model's parameters
+            sfdd_model.all_t = nn.Parameter(checkpoint['all_t'].to(device))
             sfdd_model.all_theta = nn.Parameter(checkpoint['all_theta'].to(device))
             sfdd_model.all_omega = nn.Parameter(checkpoint['all_omega'].to(device))
             sfdd_model.fa_net.load_state_dict(checkpoint['fa_net_state_dict'])
-            predictions[epoch] = (sfdd_model.all_theta.cpu().detach().numpy(), 
-                                   sfdd_model.all_omega.cpu().detach().numpy())
+            # Retrieve the optimized trajectory
+            t_all = sfdd_model.all_t.cpu().detach().numpy()
+            theta_opt = sfdd_model.all_theta.cpu().detach().numpy()
+            omega_opt = sfdd_model.all_omega.cpu().detach().numpy()
+            predictions[epoch] = (t_all, theta_opt, omega_opt)
             print(f"Loaded checkpoint from epoch {epoch}")
+
+            # Perform integration beyond the training dataset
+            # Get the true last training point
+            t_last = t_train[-1]
+            theta_last = theta_train[-1]
+            omega_last = omega_train[-1]
+            # Define integration end time
+            t_end = t_last + t_extend
+            # Integrate
+            t_ext, theta_ext, omega_ext = integrate_dynamics(
+                theta0=theta_last,
+                omega0=omega_last,
+                t_start=t_last,
+                t_end=t_end,
+                dt=dt,
+                fa_net=sfdd_model.fa_net,
+                compute_fp=compute_fp,
+                device=device
+            )
+            predictions_extended[epoch] = (t_ext, theta_ext, omega_ext)
+            print(f"Integrated extended trajectory for epoch {epoch}")
+
         except Exception as e:
             print(f"Error loading checkpoint at epoch {epoch}: {e}")
             continue
@@ -515,26 +661,17 @@ def main_SFDD():
     visualizer = VisualizerSFDD(results_dir=RESULTS_DIR)
     visualizer.plot_losses(train_losses, recon_losses, dyn_losses, smooth_losses)
 
-    # Plot the final optimized trajectory against the true solution
-    final_epoch = epochs
-    if final_epoch in predictions:
-        theta_opt = predictions[final_epoch][0]
-    else:
-        theta_opt = sfdd_model.all_theta.cpu().detach().numpy()
-    
-    # Extract the training mask as a NumPy array
-    mask = sfdd_model.train_mask.cpu().detach().numpy()
-    
-    # Plot the trajectory
-    visualizer.plot_trajectory(
+    # Plot all optimized trajectories and their extended versions from checkpoints against the true solution
+    visualizer.plot_multiple_trajectories(
         t_true=t_high,
         theta_true=theta_high,
-        t_optimized=sfdd_model.all_t.cpu().detach().numpy(),
-        theta_optimized=theta_opt,
+        checkpoints_predictions=predictions,
+        checkpoints_extended=predictions_extended,  # Pass extended trajectories
         t_train=t_train,
         theta_train=sfdd_model.theta_train.cpu().detach().numpy(),
-        mask=mask,  # Pass the mask here
-        freq=np.sqrt(k)
+        mask=sfdd_model.train_mask.cpu().detach().numpy(),
+        freq=np.sqrt(k),
+        num_interpolations=sfdd_model.num_interpolations
     )
 
     # 6. Summary of Results

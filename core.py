@@ -7,7 +7,7 @@ import torch
 import os
 
 
-def compute_fp(y, c=0.0, k=1.0):
+def compute_fp(y, c=0.0, k=20.0):
     """
     Compute the physical dynamics for a simple oscillator.
 
