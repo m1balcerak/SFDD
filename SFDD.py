@@ -548,7 +548,7 @@ def main_SFDD():
     k = 20.0      # Stiffness coefficient
     theta0 = 1.0  # Initial angular displacement
     omega0 = 0.0  # Initial angular velocity
-    total_points = 12  # Increased for better resolution
+    total_points = 16  # Increased for better resolution
     t_max = 10
     high_res = 1000  # 1000 points per second
     simulator = PendulumSimulator(c=c_true, k=k, theta0=theta0, omega0=omega0, 
@@ -575,7 +575,7 @@ def main_SFDD():
     sfdd_model = SFDDModel(
         t_train, theta_train, omega_train, 
         c=c_prior, k=k, device=device, 
-        num_interpolations=10, lr=1e-3, lambda_smooth=1e-2
+        num_interpolations=5, lr=1e-3, lambda_smooth=1
     )
     print("Saving initial checkpoint at epoch 0...")
     initial_checkpoint_path = os.path.join(RESULTS_DIR, f"SFDD_checkpoint_epoch_0.pth")
@@ -590,7 +590,7 @@ def main_SFDD():
     except Exception as e:
         print(f"Error saving initial checkpoint: {e}")
 
-    epochs = 20000  # Set epochs as needed
+    epochs = 1  # Set epochs as needed
     checkpoint_epochs = [0, epochs]  # Save checkpoints at epoch 0 and epoch=epochs
 
     # Exclude epoch 0 from training checkpoints since it's already saved

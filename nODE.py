@@ -139,6 +139,7 @@ class NeuralODEModel:
         - saved_epochs (list): List of epochs where checkpoints were saved
         - total_duration (float): Total training time in seconds
         - average_time_per_epoch (float): Average time per epoch in seconds
+        - average_times (dict): Average times for each operation per epoch
         """
         # Prepare training data
         y0_train, t_tensor_train, true_traj_train = self.prepare_data(t_train, theta_train, omega_train)
@@ -149,51 +150,100 @@ class NeuralODEModel:
         test_losses = []
         saved_epochs = []
 
-        # Start total training timer
+        # Initialize timing accumulators
         total_start_time = time.time()
-        # Initialize timer for epochs
-        epoch_start_time = time.time()
+        total_compute_train_loss = 0.0
+        total_compute_test_loss = 0.0
+        total_backprop = 0.0
+        total_optimizer_step = 0.0
 
         for epoch in range(1, epochs + 1):
+            epoch_start_time = time.time()
+
+            # Print epoch information every 100 epochs
+            if epoch % 100 == 0:
+                print(f"Epoch {epoch}/{epochs}")
+
+            # Zero gradients
             self.optimizer.zero_grad()
-            pred_traj_train = odeint(self.ode_func, y0_train, t_tensor_train)
+
+            # Compute training loss
+            start_time = time.time()
+            pred_traj_train = odeint(self.ode_func, y0_train, t_tensor_train, rtol=1e-3, atol=1e-4)
             loss_train = self.loss_fn(pred_traj_train, true_traj_train)
+            total_compute_train_loss += time.time() - start_time
+
+            # Backpropagation
+            start_time = time.time()
             loss_train.backward()
+            total_backprop += time.time() - start_time
+
+            # Optimizer step
+            start_time = time.time()
             self.optimizer.step()
+            total_optimizer_step += time.time() - start_time
+
             train_losses.append(loss_train.item())
 
-            # Evaluate on test data
+            # Compute testing loss
+            start_time = time.time()
             with torch.no_grad():
-                pred_traj_test = odeint(self.ode_func, y0_test, t_tensor_test)
+                pred_traj_test = odeint(self.ode_func, y0_test, t_tensor_test, rtol=1e-3, atol=1e-4)
                 loss_test = self.loss_fn(pred_traj_test, true_traj_test)
-                test_losses.append(loss_test.item())
+            total_compute_test_loss += time.time() - start_time
+            test_losses.append(loss_test.item())
 
             # Save checkpoint if needed
             if epoch in checkpoint_epochs:
-                checkpoint_path = os.path.join(RESULTS_DIR, f"checkpoint_epoch_{epoch}.pth")
+                checkpoint_path = os.path.join("results", f"checkpoint_epoch_{epoch}.pth")
+                os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
                 try:
                     torch.save(self.ode_func.state_dict(), checkpoint_path)
                     saved_epochs.append(epoch)
-                    print(f"Epoch {epoch}/{epochs}, Train Loss: {loss_train.item():.6f}, Test Loss: {loss_test.item():.6f}, Checkpoint saved at {checkpoint_path}")
+                    # Print checkpoint information every 100 epochs
+                    if epoch % 100 == 0:
+                        print(f"  Checkpoint saved at {checkpoint_path}")
                 except Exception as e:
-                    print(f"Error saving checkpoint at epoch {epoch}: {e}")
+                    # Print checkpoint error information every 100 epochs
+                    if epoch % 100 == 0:
+                        print(f"  Error saving checkpoint at epoch {epoch}: {e}")
 
-            # Print time every 10 epochs
-            if epoch % 10 == 0:
-                current_time = time.time()
-                elapsed = current_time - epoch_start_time
-                print(f"Epochs {epoch-9}-{epoch} completed in {elapsed:.2f} seconds.")
-                epoch_start_time = current_time  # Reset timer for next 10 epochs
+        # Optionally, print loss information every 100 epochs
+        if epoch % 100 == 0:
+            print(f"  Train Loss: {loss_train.item():.6f} | Test Loss: {loss_test.item():.6f}")
+
+            epoch_end_time = time.time()
+            epoch_duration = epoch_end_time - epoch_start_time
+            print(f"  Epoch Duration: {epoch_duration:.2f} seconds.\n")
+
 
         # End total training timer
         total_end_time = time.time()
         total_duration = total_end_time - total_start_time
         average_time_per_epoch = total_duration / epochs
+        average_compute_train_loss = total_compute_train_loss / epochs
+        average_compute_test_loss = total_compute_test_loss / epochs
+        average_backprop = total_backprop / epochs
+        average_optimizer_step = total_optimizer_step / epochs
 
+        average_times = {
+            "compute_train_loss": average_compute_train_loss,
+            "compute_test_loss": average_compute_test_loss,
+            "backpropagation": average_backprop,
+            "optimizer_step": average_optimizer_step
+        }
+
+        # Final summary
+        print("Training Complete.")
         print(f"Total training time: {total_duration:.2f} seconds.")
         print(f"Average time per epoch: {average_time_per_epoch:.2f} seconds.")
+        print("Average times per epoch:")
+        print(f"  - Compute Train Loss: {average_compute_train_loss:.4f} seconds")
+        print(f"  - Compute Test Loss: {average_compute_test_loss:.4f} seconds")
+        print(f"  - Backpropagation: {average_backprop:.4f} seconds")
+        print(f"  - Optimizer Step: {average_optimizer_step:.4f} seconds")
 
-        return train_losses, test_losses, saved_epochs, total_duration, average_time_per_epoch
+        return train_losses, test_losses, saved_epochs, total_duration, average_time_per_epoch, average_times
 
     def predict(self, t, y0):
         """
@@ -208,7 +258,7 @@ class NeuralODEModel:
         """
         t_tensor = torch.tensor(t, dtype=torch.float32).to(self.device)
         with torch.no_grad():
-            pred_traj = odeint(self.ode_func, y0, t_tensor)
+            pred_traj = odeint(self.ode_func, y0, t_tensor, rtol=1e-3, atol=1e-3)
         return pred_traj.cpu().numpy()  # Move predictions back to CPU for further processing
 
 
@@ -381,7 +431,7 @@ def main():
     k = 20.0      # Stiffness coefficient, omega_n^2 = k, so omega_n = sqrt(k) ≈ 4.4721 rad/s
     theta0 = 1.0  # Initial angular displacement
     omega0 = 0.0  # Initial angular velocity
-    total_points = 8
+    total_points = 20
     t_max = 10
     high_res = 1000  # 1000 points per second
     simulator = PendulumSimulator(c=c_true, k=k, theta0=theta0, omega0=omega0, 
@@ -420,7 +470,7 @@ def main():
     except Exception as e:
         print(f"Error saving initial checkpoint: {e}")
 
-    epochs = 5000
+    epochs = 100
     # Define specific checkpoint
     checkpoint_epochs = [0, epochs]  
 
@@ -428,13 +478,12 @@ def main():
     training_checkpoint_epochs = [epoch for epoch in checkpoint_epochs if epoch != 0]
 
     # Capture the additional returned values
-    train_losses, test_losses, saved_epochs, total_duration, average_time_per_epoch = model.train(
-        t_train, theta_train, omega_train,
-        t_test, theta_test, omega_test,
-        epochs=epochs,
-        checkpoint_epochs=training_checkpoint_epochs
+    train_losses, test_losses, saved_epochs, total_duration, average_time_per_epoch, average_times = model.train(
+    t_train, theta_train, omega_train,
+    t_test, theta_test, omega_test,
+    epochs=epochs,
+    checkpoint_epochs=training_checkpoint_epochs
     )
-
     # 5. Collect Predictions from All Checkpoints
     # Including the initial checkpoint at epoch 0
     all_checkpoint_epochs = checkpoint_epochs
